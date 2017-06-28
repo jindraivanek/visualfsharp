@@ -465,7 +465,7 @@ let private CombineMethInsts ttps mtps tinst minst = (mkTyparInst ttps tinst @ m
 /// not included in the MethInfo objects, but carried separately).
 let private GetInstantiationForMemberVal g isCSharpExt (typ,vref,minst) = 
     let memberParentTypars,memberMethodTypars,_retTy,parentTyArgs = AnalyzeTypeOfMemberVal isCSharpExt g (typ,vref)
-    CombineMethInsts memberParentTypars memberMethodTypars parentTyArgs minst
+    CombineMethInsts memberParentTypars (List.take (List.length minst) memberMethodTypars) parentTyArgs minst
 
 /// Work out the instantiation relevant to interpret the backing metadata for a property.
 let private GetInstantiationForPropertyVal g (typ,vref) = 
