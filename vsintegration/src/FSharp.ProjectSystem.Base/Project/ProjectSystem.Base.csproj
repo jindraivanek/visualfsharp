@@ -14,6 +14,7 @@
     <RootNamespace>Microsoft.VisualStudio.FSharp.ProjectSystem</RootNamespace>
     <DisableImplicitFSharpCoreReference>true</DisableImplicitFSharpCoreReference>
     <UsePackageTargetFallbackHack>true</UsePackageTargetFallbackHack>
+    <EnableDefaultEmbeddedResourceItems>false</EnableDefaultEmbeddedResourceItems>
   </PropertyGroup>
 
   <ItemGroup>
@@ -24,7 +25,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <EmbeddedResource Update="Microsoft.VisualStudio.Package.Project.resx">
+    <EmbeddedResource Include="Microsoft.VisualStudio.Package.Project.resx">
       <LogicalName>Microsoft.VisualStudio.Package.Project.resources</LogicalName>
       <SubType>Designer</SubType>
     </EmbeddedResource>
@@ -36,7 +37,6 @@
   <ItemGroup>
     <ProjectReference Include="$(FSharpSourcesRoot)\fsharp\FSharp.Core\FSharp.Core.fsproj" />
     <ProjectReference Include="$(FSharpSourcesRoot)\fsharp\FSharp.Compiler.Private\FSharp.Compiler.Private.fsproj" />
-    <ProjectReference Include="..\..\FSharp.LanguageService.Base\FSharp.LanguageService.Base.csproj" />
   </ItemGroup>
 
   <ItemGroup>
@@ -72,13 +72,13 @@
     <PackageReference Include="VSSDK.VSLangProj.8" Version="$(VSSDKVSLangProj8PackageVersion)" />
   </ItemGroup>
 
-  <Target Name="HACK_AddAliasToMicrosoftVisualStudioShell140" BeforeTargets="ResolveReferences">
+  <Target Name="HACK_AddAliasToMicrosoftVisualStudioShell140" BeforeTargets="CoreCompile">
     <ItemGroup>
       <!--
       We require a reference to Microsoft.VisualStudio.Shell.14.0.dll, but that causes some issues with duplicate type
       names.  The ~hack~ fix is to include the package reference and ensure the Aliases metadata gets set afterwards.
       -->
-      <ReferencePath Update="%(Identity)" Aliases="Shell14" Condition="'%(ReferencePath.PackageName)' == 'Microsoft.VisualStudio.Shell.14.0'" />
+      <ReferencePathWithRefAssemblies Update="%(Identity)" Aliases="Shell14" Condition="'%(ReferencePathWithRefAssemblies.NuGetPackageId)' == 'Microsoft.VisualStudio.Shell.14.0'" />
     </ItemGroup>
   </Target>
 

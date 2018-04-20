@@ -1120,7 +1120,7 @@ and GetTypeDefAsEventMapRow cenv tidx =
            SimpleIndex (TableNames.Event, cenv.eventDefs.Count + 1) |]  
     
 and GetKeyForFieldDef tidx (fd: ILFieldDef) = 
-    FieldDefKey (tidx, fd.Name, fd.Type)
+    FieldDefKey (tidx, fd.Name, fd.FieldType)
 
 and GenFieldDefPass2 cenv tidx fd = 
     ignore (cenv.fieldDefs.AddUniqueEntry "field" (fun (fdkey:FieldDefKey) -> fdkey.Name) (GetKeyForFieldDef tidx fd))
@@ -1144,7 +1144,7 @@ and GenMethodDefPass2 cenv tidx md =
     cenv.methodDefIdxs.[md] <- idx
 
 and GetKeyForPropertyDef tidx (x: ILPropertyDef)  = 
-    PropKey (tidx, x.Name, x.Type, x.Args)
+    PropKey (tidx, x.Name, x.PropertyType, x.Args)
 
 and GenPropertyDefPass2 cenv tidx x = 
     ignore (cenv.propertyDefs.AddUniqueEntry "property" (fun (PropKey (_, n, _, _)) -> n) (GetKeyForPropertyDef tidx x))
@@ -1307,10 +1307,10 @@ and GetMethodDefOrRefAsUncodedToken (tag, idx) =
     getUncodedToken tab idx
 
 and GetMethodSpecInfoAsUncodedToken cenv env ((_, _, _, _, _, _, minst:ILGenericArgs) as minfo) =
-    if minst.Length > 0 then 
-      getUncodedToken TableNames.MethodSpec (GetMethodSpecInfoAsMethodSpecIdx cenv env minfo)
-    else 
-      GetMethodDefOrRefAsUncodedToken (GetMethodRefInfoAsMethodRefOrDef false cenv env (GetMethodRefInfoOfMethodSpecInfo minfo))
+    if List.isEmpty minst then
+        GetMethodDefOrRefAsUncodedToken (GetMethodRefInfoAsMethodRefOrDef false cenv env (GetMethodRefInfoOfMethodSpecInfo minfo))
+    else
+        getUncodedToken TableNames.MethodSpec (GetMethodSpecInfoAsMethodSpecIdx cenv env minfo)
 
 and GetMethodSpecAsUncodedToken cenv env mspec = 
     GetMethodSpecInfoAsUncodedToken cenv env (InfoOfMethodSpec mspec)
@@ -1400,10 +1400,10 @@ and GenCustomAttrsPass3Or4 cenv hca (attrs: ILAttributes) =
     attrs.AsList |> List.iter (GenCustomAttrPass3Or4 cenv hca) 
 
 // -------------------------------------------------------------------- 
-// ILPermissionSet --> DeclSecurity rows
+// ILSecurityDecl --> DeclSecurity rows
 // -------------------------------------------------------------------- *)
 
-let rec GetSecurityDeclRow cenv hds (PermissionSet (action, s)) = 
+let rec GetSecurityDeclRow cenv hds (ILSecurityDecl (action, s)) = 
     UnsharedRow 
         [| UShort (uint16 (List.assoc action (Lazy.force ILSecurityActionMap)))
            HasDeclSecurity (fst hds, snd hds)
@@ -1643,9 +1643,10 @@ module Codebuf =
                             // a safe approximation because code only gets smaller. 
                             if not (origAvailBrFixups.ContainsKey tg) then 
                                 dprintn ("branch target " + formatCodeLabel tg + " not found in code")
-                            let origDest = 
-                                if origAvailBrFixups.ContainsKey tg then origAvailBrFixups.[tg]
-                                else 666666
+                            let origDest =
+                                match origAvailBrFixups.TryGetValue(tg) with
+                                | true, fixup -> fixup
+                                | _ -> 666666
                             let origRelOffset = origDest - origEndOfInstr
                             -128 <= origRelOffset && origRelOffset <= 127
                           end 
@@ -1718,18 +1719,16 @@ module Codebuf =
       
       // Now apply the adjusted fixups in the new code 
       newReqdBrFixups |> List.iter (fun (newFixupLoc, endOfInstr, tg, small) ->
-            if not (newAvailBrFixups.ContainsKey tg) then 
-              failwith ("target "+formatCodeLabel tg+" not found in new fixups")
-            try 
-                let n = newAvailBrFixups.[tg]
-                let relOffset = (n - endOfInstr)
-                if small then 
-                    if Bytes.get newCode newFixupLoc <> 0x98 then failwith "br fixupsanity check failed"
-                    newCode.[newFixupLoc] <- b0 relOffset
-                else 
-                    checkFixup32 newCode newFixupLoc 0xf00dd00fl
-                    applyFixup32 newCode newFixupLoc relOffset
-            with :? KeyNotFoundException -> ())
+          match newAvailBrFixups.TryGetValue(tg) with
+          | true, n ->
+              let relOffset = n - endOfInstr
+              if small then 
+                  if Bytes.get newCode newFixupLoc <> 0x98 then failwith "br fixupsanity check failed"
+                  newCode.[newFixupLoc] <- b0 relOffset
+              else 
+                  checkFixup32 newCode newFixupLoc 0xf00dd00fl
+                  applyFixup32 newCode newFixupLoc relOffset
+          | _ -> failwith ("target " + formatCodeLabel tg + " not found in new fixups"))
 
       newCode, newReqdStringFixups, newExnClauses, newSeqPoints, newScopes
 
@@ -2162,14 +2161,19 @@ module Codebuf =
         // Build a table mapping Abstract IL pcs to positions in the generated code buffer
         let pc2pos = Array.zeroCreate (instrs.Length+1)
         let pc2labs = Dictionary()
-        for (KeyValue(lab, pc)) in code.Labels do
-            if pc2labs.ContainsKey pc then pc2labs.[pc] <- lab :: pc2labs.[pc] else pc2labs.[pc] <- [lab]
+        for KeyValue (lab, pc) in code.Labels do
+            match pc2labs.TryGetValue(pc) with
+            | true, labels ->
+                pc2labs.[pc] <- lab :: labels
+            | _ -> pc2labs.[pc] <- [lab]
 
         // Emit the instructions
         for pc = 0 to instrs.Length do
-            if pc2labs.ContainsKey pc then  
-                for lab in pc2labs.[pc] do
-                    codebuf.RecordAvailBrFixup lab
+            match pc2labs.TryGetValue(pc) with
+            | true, labels ->
+                for lab in labels do
+                    codebuf.RecordAvailBrFixup(lab)
+            | _ -> ()
             pc2pos.[pc] <- codebuf.code.Position
             if pc < instrs.Length then 
                 match instrs.[pc] with 
@@ -2323,7 +2327,7 @@ let rec GetFieldDefAsFieldDefRow cenv env (fd: ILFieldDef) =
            StringE (GetStringHeapIdx cenv fd.Name)
            Blob (GetFieldDefSigAsBlobIdx cenv env fd ) |]
 
-and GetFieldDefSigAsBlobIdx cenv env fd = GetFieldDefTypeAsBlobIdx cenv env fd.Type
+and GetFieldDefSigAsBlobIdx cenv env fd = GetFieldDefTypeAsBlobIdx cenv env fd.FieldType
 
 and GenFieldDefPass3 cenv env fd = 
     let fidx = AddUnsharedRow cenv TableNames.Field (GetFieldDefAsFieldDefRow cenv env fd)
@@ -2475,7 +2479,7 @@ let GenReturnPass3 cenv (returnv: ILReturn) =
 let GetMethodDefSigAsBytes cenv env (mdef: ILMethodDef) = 
     emitBytesViaBuffer (fun bb -> 
       bb.EmitByte (callconvToByte mdef.GenericParams.Length mdef.CallingConv)
-      if mdef.GenericParams.Length > 0 then bb.EmitZ32 mdef.GenericParams.Length
+      if not (List.isEmpty mdef.GenericParams) then bb.EmitZ32 mdef.GenericParams.Length
       bb.EmitZ32 mdef.Parameters.Length
       EmitType cenv env bb mdef.Return.Type
       mdef.ParameterTypes |> List.iter (EmitType cenv env bb))
@@ -2492,7 +2496,7 @@ let GenMethodDefAsRow cenv env midx (md: ILMethodDef) =
         if cenv.entrypoint <> None then failwith "duplicate entrypoint"
         else cenv.entrypoint <- Some (true, midx)
     let codeAddr = 
-      (match md.mdBody.Contents with 
+      (match md.Body.Contents with 
       | MethodBody.IL ilmbody -> 
           let addr = cenv.nextCodeAddr
           let (localToken, code, seqpoints, rootScope) = GenILMethodBody md.Name cenv env ilmbody
@@ -2563,7 +2567,7 @@ let GenMethodDefPass3 cenv env (md:ILMethodDef) =
     md.CustomAttrs |> GenCustomAttrsPass3Or4 cenv (hca_MethodDef, midx) 
     md.SecurityDecls.AsList |> GenSecurityDeclsPass3 cenv (hds_MethodDef, midx)
     md.GenericParams |> List.iteri (fun n gp -> GenGenericParamPass3 cenv env n (tomd_MethodDef, midx) gp) 
-    match md.mdBody.Contents with 
+    match md.Body.Contents with 
     | MethodBody.PInvoke attr ->
         let flags = 
           begin match attr.CallingConv with 
@@ -2616,12 +2620,12 @@ let GenPropertyMethodSemanticsPass3 cenv pidx kind mref =
 let rec GetPropertySigAsBlobIdx cenv env prop = 
     GetBytesAsBlobIdx cenv (GetPropertySigAsBytes cenv env prop)
 
-and GetPropertySigAsBytes cenv env prop = 
+and GetPropertySigAsBytes cenv env (prop: ILPropertyDef) = 
     emitBytesViaBuffer (fun bb -> 
         let b =  ((hasthisToByte prop.CallingConv) ||| e_IMAGE_CEE_CS_CALLCONV_PROPERTY)
         bb.EmitByte b
         bb.EmitZ32 prop.Args.Length
-        EmitType cenv env bb prop.Type
+        EmitType cenv env bb prop.PropertyType
         prop.Args |> List.iter (EmitType cenv env bb))
 
 and GetPropertyAsPropertyRow cenv env (prop:ILPropertyDef) = 
@@ -2658,7 +2662,7 @@ let rec GenEventMethodSemanticsPass3 cenv eidx kind mref =
 /// ILEventDef --> Event Row + MethodSemantics entries
 and GenEventAsEventRow cenv env (md: ILEventDef) = 
     let flags = md.Attributes
-    let tdorTag, tdorRow = GetTypeOptionAsTypeDefOrRef cenv env md.Type
+    let tdorTag, tdorRow = GetTypeOptionAsTypeDefOrRef cenv env md.EventType
     UnsharedRow 
        [| UShort (uint16 flags) 
           StringE (GetStringHeapIdx cenv md.Name) 
@@ -2680,17 +2684,18 @@ and GenEventPass3 cenv env (md: ILEventDef) =
 let rec GetResourceAsManifestResourceRow cenv r = 
     let data, impl = 
       match r.Location with
-      | ILResourceLocation.Local bf ->
-          let b = bf()
+      | ILResourceLocation.LocalIn _
+      | ILResourceLocation.LocalOut _ ->
+          let bytes = r.GetBytes()
           // Embedded managed resources must be word-aligned.  However resource format is 
           // not specified in ECMA.  Some mscorlib resources appear to be non-aligned - it seems it doesn't matter.. 
           let offset = cenv.resources.Position
           let alignedOffset =  (align 0x8 offset)
           let pad = alignedOffset - offset
-          let resourceSize = b.Length
+          let resourceSize = bytes.Length
           cenv.resources.EmitPadding pad
           cenv.resources.EmitInt32 resourceSize
-          cenv.resources.EmitBytes b
+          cenv.resources.EmitBytes bytes
           Data (alignedOffset, true),  (i_File, 0) 
       | ILResourceLocation.File (mref, offset) -> ULong offset, (i_File, GetModuleRefAsFileIdx cenv mref)
       | ILResourceLocation.Assembly aref -> ULong 0x0, (i_AssemblyRef, GetAssemblyRefAsIdx cenv aref)
@@ -3712,7 +3717,13 @@ let writeBinaryAndReportMappings (outfile,
                   ignore resourceFormat
                   [||]
 #else
-                  let unlinkedResources = List.map Lazy.force resources
+                  let unlinkedResources = 
+                      resources |> List.map (function 
+                          | ILNativeResource.Out bytes -> bytes
+                          | ILNativeResource.In (fileName, linkedResourceBase, start, len) -> 
+                               let linkedResource = File.ReadBinaryChunk (fileName, start, len)
+                               unlinkResource linkedResourceBase linkedResource)
+                               
                   begin
                     try linkNativeResources unlinkedResources next resourceFormat (Path.GetDirectoryName(outfile))
                     with e -> failwith ("Linking a native resource failed: "+e.Message+"")

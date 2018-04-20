@@ -43,6 +43,10 @@ type TyparMap<'T> =
         let (TPMap m) = tm
         m.ContainsKey(v.Stamp)
 
+    member tm.TryFind (v: Typar) =
+        let (TPMap m) = tm
+        m.TryFind(v.Stamp)
+
     member tm.Add (v: Typar, x) = 
         let (TPMap m) = tm
         TPMap (m.Add(v.Stamp, x))
@@ -287,8 +291,8 @@ and copyAndRemapAndBindTyparsFull remapAttrib tyenv tps =
       let tps' = copyTypars tps
       let tyenv = { tyenv with tpinst = bindTypars tps (generalizeTypars tps') tyenv.tpinst } 
       (tps, tps') ||> List.iter2 (fun tporig tp -> 
-         tp.FixupConstraints (remapTyparConstraintsAux tyenv  tporig.Constraints)
-         tp.typar_attribs  <- tporig.typar_attribs |> remapAttrib)
+         tp.SetConstraints (remapTyparConstraintsAux tyenv  tporig.Constraints)
+         tp.SetAttribs (tporig.Attribs |> remapAttrib))
       tps', tyenv
 
 // copies bound typars, extends tpinst 
@@ -1451,7 +1455,7 @@ let tryDestRefTupleTy g ty =
 type UncurriedArgInfos = (TType * ArgReprInfo) list 
 type CurriedArgInfos = (TType * ArgReprInfo) list list
 
-// A 'tau' type is one with its type paramaeters stripped off 
+// A 'tau' type is one with its type parameters stripped off 
 let GetTopTauTypeInFSharpForm g (curriedArgInfos: ArgReprInfo list list) tau m =
     let nArgInfos = curriedArgInfos.Length
     let argtys, rty = stripFunTyN g nArgInfos tau
@@ -2273,7 +2277,7 @@ module PrettyTypes =
         let niceTypars = List.map2 newPrettyTypar tps names
         let tl, _tt = mkTyparToTyparRenaming tps niceTypars in
         let renaming = renaming @ tl
-        (tps, niceTypars) ||> List.iter2 (fun tp tpnice -> tpnice.FixupConstraints (instTyparConstraints renaming tp.Constraints)) ;
+        (tps, niceTypars) ||> List.iter2 (fun tp tpnice -> tpnice.SetConstraints (instTyparConstraints renaming tp.Constraints)) ;
         niceTypars, renaming
 
     // We choose names for type parameters from 'a'..'t'
@@ -2282,7 +2286,7 @@ module PrettyTypes =
     // Finally, we skip any names already in use
     let NeedsPrettyTyparName (tp:Typar) = 
         tp.IsCompilerGenerated && 
-        tp.typar_il_name.IsNone && 
+        tp.ILName.IsNone && 
         (tp.typar_id.idText = unassignedTyparName) 
 
     let PrettyTyparNames pred alreadyInUse tps = 
@@ -3692,6 +3696,7 @@ let wrapModuleOrNamespaceExprInNamespace (id :Ident) cpath mexpr =
 // cleanup: make this a property
 let SigTypeOfImplFile (TImplFile(_, _, mexpr, _, _)) = mexpr.Type 
 
+
 //--------------------------------------------------------------------------
 // Data structures representing what gets hidden and what gets remapped (i.e. renamed or alpha-converted)
 // when a module signature is applied to a module.
@@ -5030,14 +5035,19 @@ and copyAndRemapAndBindTyconsAndVals g compgen tmenv tycons vs =
              
     (tycons, tycons') ||> List.iter2 (fun tcd tcd' -> 
         let tps', tmenvinner2 = tmenvCopyRemapAndBindTypars (remapAttribs g tmenvinner) tmenvinner (tcd.entity_typars.Force(tcd.entity_range))
-        tcd'.entity_typars         <- LazyWithContext.NotLazy tps';
-        tcd'.entity_attribs        <- tcd.entity_attribs |> remapAttribs g tmenvinner2;
-        tcd'.entity_tycon_repr           <- tcd.entity_tycon_repr    |> remapTyconRepr g tmenvinner2;
-        tcd'.entity_tycon_abbrev         <- tcd.entity_tycon_abbrev  |> Option.map (remapType tmenvinner2) ;
-        tcd'.entity_tycon_tcaug          <- tcd.entity_tycon_tcaug   |> remapTyconAug tmenvinner2 ;
+        tcd'.entity_typars         <- LazyWithContext.NotLazy tps'
+        tcd'.entity_attribs        <- tcd.entity_attribs       |> remapAttribs g tmenvinner2
+        tcd'.entity_tycon_repr     <- tcd.entity_tycon_repr    |> remapTyconRepr g tmenvinner2
+        let typeAbbrevR             = tcd.TypeAbbrev           |> Option.map (remapType tmenvinner2)
+        tcd'.entity_tycon_tcaug    <- tcd.entity_tycon_tcaug   |> remapTyconAug tmenvinner2
         tcd'.entity_modul_contents <- MaybeLazy.Strict (tcd.entity_modul_contents.Value 
-                                                        |> mapImmediateValsAndTycons lookupTycon lookupVal);
-        tcd'.entity_exn_info      <- tcd.entity_exn_info      |> remapTyconExnInfo g tmenvinner2) ;
+                                                        |> mapImmediateValsAndTycons lookupTycon lookupVal)
+        let exnInfoR                = tcd.ExceptionInfo        |> remapTyconExnInfo g tmenvinner2
+        match tcd'.entity_opt_data with
+        | Some optData -> tcd'.entity_opt_data <- Some { optData with entity_tycon_abbrev = typeAbbrevR; entity_exn_info = exnInfoR }
+        | _ -> 
+            tcd'.SetTypeAbbrev typeAbbrevR
+            tcd'.SetExceptionInfo exnInfoR)
     tycons', vs', tmenvinner
 
 
@@ -5082,12 +5092,12 @@ and allValsOfModDef mdef =
           | TMAbstract(ModuleOrNamespaceExprWithSig(mty, _, _)) -> 
               yield! allValsOfModuleOrNamespaceTy mty }
 
-and remapAndBindModExpr g compgen tmenv (ModuleOrNamespaceExprWithSig(mty, mdef, m)) =
+and remapAndBindModuleOrNamespaceExprWithSig g compgen tmenv (ModuleOrNamespaceExprWithSig(mty, mdef, m)) =
     let mdef = copyAndRemapModDef g compgen tmenv mdef
     let mty, tmenv = copyAndRemapAndBindModTy g compgen tmenv mty
     ModuleOrNamespaceExprWithSig(mty, mdef, m), tmenv
 
-and remapModExpr g compgen tmenv (ModuleOrNamespaceExprWithSig(mty, mdef, m)) =
+and remapModuleOrNamespaceExprWithSig g compgen tmenv (ModuleOrNamespaceExprWithSig(mty, mdef, m)) =
     let mdef = copyAndRemapModDef g compgen tmenv mdef 
     let mty = remapModTy g compgen tmenv mty 
     ModuleOrNamespaceExprWithSig(mty, mdef, m)
@@ -5119,7 +5129,7 @@ and remapAndRenameModDef g compgen tmenv mdef =
         let defs = remapAndRenameModDefs g compgen tmenv defs
         TMDefs defs
     | TMAbstract mexpr -> 
-        let mexpr = remapModExpr g compgen tmenv mexpr
+        let mexpr = remapModuleOrNamespaceExprWithSig g compgen tmenv mexpr
         TMAbstract mexpr
 
 and remapAndRenameModBind g compgen tmenv x = 
@@ -5134,7 +5144,7 @@ and remapAndRenameModBind g compgen tmenv x =
         ModuleOrNamespaceBinding.Module(mspec, def)
 
 and remapImplFile g compgen tmenv mv = 
-    mapAccImplFile (remapAndBindModExpr g compgen) tmenv mv
+    mapAccImplFile (remapAndBindModuleOrNamespaceExprWithSig g compgen) tmenv mv
 
 let copyModuleOrNamespaceType     g compgen mtyp = copyAndRemapAndBindModTy g compgen Remap.Empty mtyp |> fst
 let copyExpr     g compgen e    = remapExpr g compgen Remap.Empty e    
@@ -7704,7 +7714,6 @@ and rewriteObjExprInterfaceImpl env (ty, overrides) =
     
 and rewriteModuleOrNamespaceExpr env x = 
     match x with  
-    (* | ModuleOrNamespaceExprWithSig(mty, e, m) -> ModuleOrNamespaceExprWithSig(mty, rewriteModuleOrNamespaceExpr env e, m) *)
     | ModuleOrNamespaceExprWithSig(mty, def, m) ->  ModuleOrNamespaceExprWithSig(mty, rewriteModuleOrNamespaceDef env def, m)
 
 and rewriteModuleOrNamespaceDefs env x = List.map (rewriteModuleOrNamespaceDef env) x
@@ -7773,17 +7782,26 @@ let MakeExportRemapping viewedCcu (mspec:ModuleOrNamespace) =
 
 let rec remapEntityDataToNonLocal g tmenv (d: Entity) = 
     let tps', tmenvinner = tmenvCopyRemapAndBindTypars (remapAttribs g tmenv) tmenv (d.entity_typars.Force(d.entity_range))
-
+    let typarsR          = LazyWithContext.NotLazy tps'
+    let attribsR         = d.entity_attribs        |> remapAttribs g tmenvinner
+    let tyconReprR       = d.entity_tycon_repr     |> remapTyconRepr g tmenvinner
+    let tyconAbbrevR     = d.TypeAbbrev            |> Option.map (remapType tmenvinner)
+    let tyconTcaugR      = d.entity_tycon_tcaug    |> remapTyconAug tmenvinner
+    let modulContentsR   = 
+        MaybeLazy.Strict (d.entity_modul_contents.Value
+                          |> mapImmediateValsAndTycons (remapTyconToNonLocal g tmenv) (remapValToNonLocal g tmenv))
+    let exnInfoR         = d.ExceptionInfo         |> remapTyconExnInfo g tmenvinner
     { d with 
-          entity_typars         = LazyWithContext.NotLazy tps';
-          entity_attribs        = d.entity_attribs        |> remapAttribs g tmenvinner;
-          entity_tycon_repr           = d.entity_tycon_repr           |> remapTyconRepr g tmenvinner;
-          entity_tycon_abbrev         = d.entity_tycon_abbrev         |> Option.map (remapType tmenvinner) ;
-          entity_tycon_tcaug          = d.entity_tycon_tcaug          |> remapTyconAug tmenvinner ;
-          entity_modul_contents = 
-              MaybeLazy.Strict (d.entity_modul_contents.Value
-                                |> mapImmediateValsAndTycons (remapTyconToNonLocal g tmenv) (remapValToNonLocal g tmenv));
-          entity_exn_info      = d.entity_exn_info      |> remapTyconExnInfo g tmenvinner}
+          entity_typars         = typarsR
+          entity_attribs        = attribsR
+          entity_tycon_repr     = tyconReprR
+          entity_tycon_tcaug    = tyconTcaugR
+          entity_modul_contents = modulContentsR
+          entity_opt_data       =
+            match d.entity_opt_data with
+            | Some dd ->
+                Some { dd with  entity_tycon_abbrev = tyconAbbrevR; entity_exn_info = exnInfoR }
+            | _ -> None }
 
 and remapTyconToNonLocal g tmenv x = 
     x |> NewModifiedTycon (remapEntityDataToNonLocal g tmenv)  

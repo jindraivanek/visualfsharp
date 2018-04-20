@@ -1,15 +1,6 @@
 <Project>
 
-  <PropertyGroup>
-    <TargetDotnetProfile Condition="$(TargetFramework.StartsWith('netstandard')) or $(TargetFramework.StartsWith('netcoreapp'))">coreclr</TargetDotnetProfile>
-    <TargetDotnetProfile Condition="$(TargetFramework.StartsWith('net4'))">net40</TargetDotnetProfile>
-    <OutputPath>$(RepoRoot)$(Configuration)\$(TargetDotnetProfile)\bin</OutputPath>
-    <IntermediateOutputPath>$(RepoRoot)$(Configuration)\$(TargetDotnetProfile)\obj\$(MSBuildProjectName)\</IntermediateOutputPath>
-    <XlfLanguages>en;$(XlfLanguages)</XlfLanguages>
-  </PropertyGroup>
-
-  <Import Project="build\targets\AssemblyVersions.props" />
-  <Import Project="build\targets\GenerateAssemblyAttributes.targets" />
-  <Import Project="build\targets\GenerateInternalsVisibleTo.targets" />
+  <Import Project="FSharpBuild.Directory.Build.targets" Condition = " '$(FSharpTestCompilerVersion)' == '' "/>
+  <Import Project="FSharpTests.Directory.Build.targets" Condition = " '$(FSharpTestCompilerVersion)' != '' "/>
 
 </Project>

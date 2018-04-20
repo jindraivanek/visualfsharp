@@ -1412,8 +1412,10 @@ let CheckEntityDefn cenv env (tycon:Entity) =
 
         let immediateProps = GetImmediateIntrinsicPropInfosOfType (None,AccessibleFromSomewhere) cenv.g cenv.amap m typ
 
-        let getHash (hash:Dictionary<string,_>) nm = 
-             if hash.ContainsKey(nm) then hash.[nm] else []
+        let getHash (hash:Dictionary<string,_>) nm =
+            match hash.TryGetValue(nm) with
+            | true, h -> h
+            | _ -> []
         
         // precompute methods grouped by MethInfo.LogicalName
         let hashOfImmediateMeths = 
@@ -1657,7 +1659,7 @@ let CheckEntityDefns cenv env tycons =
 
 let rec CheckModuleExpr cenv env x = 
     match x with  
-    | ModuleOrNamespaceExprWithSig(mty,def,_) -> 
+    | ModuleOrNamespaceExprWithSig(mty, def, _) -> 
        let (rpi,mhi) = ComputeRemappingFromImplementationToSignature cenv.g def mty
        let env = { env with sigToImplRemapInfo = (mkRepackageRemapping rpi,mhi) :: env.sigToImplRemapInfo }
        CheckDefnInModule cenv env def
